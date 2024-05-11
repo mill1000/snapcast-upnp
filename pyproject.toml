@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snapcast-upnp"
+description = "Snapcast stream plugin for UPnP renderers."
+version = "1.0.0"
+readme = "README.md"
+authors = [
+  {name = "Tucker Kern", email = "tuckkern@gmail.com"},
+]
+requires-python = ">=3.8"
+license = {text = "MIT"}
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Home Automation"
+]
+dependencies = [
+  "aioconsole", 
+  "async_upnp_client"
+]
+
+[project.urls]
+Repository = "https://github.com/mill1000/snapcast-upnp"
+Issues = "https://github.com/mill1000/snapcast-upnp/issues"
+
+[project.scripts]
+snapcast-upnp = "snapcast_upnp:main"
+
+[tool.setuptools]
+py-modules = ["snapcast_upnp"]
