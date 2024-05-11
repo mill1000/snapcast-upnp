@@ -1,67 +1,138 @@
+#!/usr/bin/env python3
+
 import argparse
 import asyncio
 import json
 import logging
-from datetime import datetime
-from typing import Any, Sequence, Union
+from enum import StrEnum
+from typing import Any, Sequence
 
 import aioconsole
 from async_upnp_client.aiohttp import AiohttpNotifyServer, AiohttpRequester
-from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
+from async_upnp_client.client import UpnpService, UpnpStateVariable
 from async_upnp_client.client_factory import UpnpFactory
-from async_upnp_client.profiles.dlna import DmrDevice, dlna_handle_notify_last_change
+from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.utils import async_get_local_ip
 
 _LOGGER = logging.getLogger("snapcast-upnp")
 
-event_handler = None
-
-_TIMEOUT = 4
+_UPNP_TIMEOUT = 4
 
 
-async def _create_device(description_url: str) -> UpnpDevice:
-    requester = AiohttpRequester(_TIMEOUT)
-    factory = UpnpFactory(requester)
-    return await factory.async_create_device(description_url)
+class SnapcastCommand(StrEnum):
+    CONTROL = "Control"
+    SET_PROPERTY = "SetProperty"
+    GET_PROPERTIES = "GetProperties"
 
 
-def _get_timestamp() -> Union[str, float]:
-    return datetime.now().isoformat(" ")
+_SNAPCAST_PLAYER_INTERFACE = "Plugin.Stream.Player"
+_SNAPCAST_SUPPORTED_COMMANDS = [e.value for e in SnapcastCommand]
+_SNAPCAST_STREAM_READY = "Plugin.Stream.Ready"
+_SNAPCAST_PLAYER_PROPERTIES = "Plugin.Stream.Player.Properties"
+
+_TRANSPORT_STATE_TO_PLAYBACK_STATE = {
+    TransportState.PLAYING: "playing",
+    TransportState.TRANSITIONING: "playing",
+    TransportState.PAUSED_PLAYBACK: "paused",
+    TransportState.STOPPED: "stopped",
+}
 
 
-def _on_event(
-    service: UpnpService, service_variables: Sequence[UpnpStateVariable]
-) -> None:
-    """Handle a UPnP event."""
-    _LOGGER.debug(
-        "State variable change for %s, variables: %s",
-        service,
-        ",".join([sv.name for sv in service_variables]),
-    )
-    obj = {
-        "timestamp": _get_timestamp(),
-        "service_id": service.service_id,
-        "service_type": service.service_type,
-        "state_variables": {sv.name: sv.value for sv in service_variables},
+def get_properties(device) -> dict[str, Any]:
+    props = {
+        "playbackStatus": _TRANSPORT_STATE_TO_PLAYBACK_STATE.get(device.transport_state, "stopped"),
+        "loopStatus": "none",  # TODO assume never looping
+        "shuffle": False,  # TODO assume never shuffle
+        "volume": int(100 * (device.volume_level or 0.0)) if device.has_volume_level else 100,
+        "mute": device.is_volume_muted if device.has_volume_mute else False,
+        "rate": 1.0,  # TODO assume always normal speed
+        # TODO is not evented, need to poll, does snapcast use this?
+        "position": device.media_position,
+
+        # TODO disable controls for now
+        "canGoNext": False,
+        "canGoPrevious": False,
+        "canPlay": False,
+        "canPause": False,
+        "canSeek": False,
+        "canControl": False,
     }
 
-    # special handling for DLNA LastChange state variable
-    if len(service_variables) == 1 and service_variables[0].name == "LastChange":
-
-        print(json.dumps(obj, indent=2))
-        last_change = service_variables[0]
-        dlna_handle_notify_last_change(last_change)
+    if device.transport_state != TransportState.STOPPED:
+        props["metadata"] = {
+            "duration": device.media_duration or 0.0,
+            "artist": [device.media_artist or ""],
+            "album": device.media_album_name or "",
+            "albumArtist": [device.media_album_artist or ""],
+            "title": device.media_title or "",
+            "artUrl": device.media_image_url or "",
+            # TODO Original track number not supported by upnp_client_async
+            # "trackNumber": device.media_original_track_number or "",
+            # TODO Date not supported by upnp_client_async
+            # "date": device.media_date or "",
+        }
     else:
-        print(json.dumps(obj, indent=2))
+        props["metadata"] = None
+
+    return props
 
 
-async def subscribe(description_url: str, service_names: Any) -> None:
-    """Subscribe to service(s) and output updates."""
-    global event_handler  # pylint: disable=global-statement
+def jsonrpc_response(result) -> str:
+    resp = {
+        "id": 1,  # TODO increment?
+        "jsonrpc": "2.0",
+        "result": result
+    }
 
-    device = await _create_device(description_url)
+    return json.dumps(resp) + "\n"
 
-    # start notify server/event handler
+
+def jsonrpc_command(method, params=None) -> str:
+    cmd = {
+        "jsonrpc": "2.0",
+        "method": method,
+    }
+    if params:
+        cmd["params"] = params
+
+    return json.dumps(cmd) + "\n"
+
+
+class DmrEventHandler:
+    def __init__(self, device: DmrDevice, stdout):
+        self._device = device
+        self._stdout = stdout
+        self._task = None
+
+    async def _notify(self) -> None:
+        # Delay to debounce events
+        await asyncio.sleep(1.5)
+
+        # Notify Snapcast
+        notify = jsonrpc_command(
+            _SNAPCAST_PLAYER_PROPERTIES, get_properties(self._device))
+        self._stdout.write(notify)
+
+        # Clear task object once we're done
+        self._task = None
+
+    def callback(self,
+                 _service: UpnpService, state_variables: Sequence[UpnpStateVariable]
+                 ) -> None:
+        if not state_variables:
+            return
+
+        # Queue notify task for execution if it doesn't exist
+        if self._task is None:
+            self._task = asyncio.create_task(self._notify())
+
+
+async def connect_device(description_url: str) -> DmrDevice:
+    requester = AiohttpRequester(_UPNP_TIMEOUT)
+    factory = UpnpFactory(requester)
+    device = await factory.async_create_device(description_url)
+
+    # Start notify server/event handler
     _, local_ip = await async_get_local_ip(device.device_url)
     server = AiohttpNotifyServer(device.requester, source=(local_ip, 0))
     await server.async_start_server()
@@ -70,62 +141,76 @@ async def subscribe(description_url: str, service_names: Any) -> None:
     # Create profile wrapper
     dmr_device = DmrDevice(device, server.event_handler)
 
-    # TODO add event handler to device to get faster notification of playback changes?
-    # self._device.on_event = self._on_event
+    # Get async streams
+    _, stdout = await aioconsole.get_standard_streams()
 
+    # Create event handler
+    event_handler = DmrEventHandler(dmr_device, stdout)
+
+    # Subscribe to events
+    dmr_device.on_event = event_handler.callback
     await dmr_device.async_subscribe_services(auto_resubscribe=True)
 
-    while True:
-        await asyncio.sleep(120)
+    return dmr_device
 
 
-async def upnp_task(args) -> None:
-
-    await subscribe(args.device, "*")
-
-
-async def snapcast_task():
-    SNAPCAST_PLAYER_INTERFACE = "Plugin.Stream.Player"
-
-    stdin, stdout = await aioconsole.get_standard_streams()
-    while True:
-        line = await stdin.readline()
-        request = json.loads(line)
-
-        interface, command = request["method"].split(".", 1)
-        if interface != SNAPCAST_PLAYER_INTERFACE:
-            _LOGGER.warning("Ignoring request for unknown '%s'.", interface)
-            continue
-
+# TODO catch signals to unsubscribe
 
 async def _run(args):
-    await asyncio.gather(
-        upnp_task(args),
-        snapcast_task(),
-    )
+    device = await connect_device(args.device)
+    await device.async_update()
 
+    try:
+        stdin, stdout = await aioconsole.get_standard_streams()
 
-# def main() -> None:
-#     try:
-#         asyncio.run(_run())
-#     except KeyboardInterrupt:
-#         # TODO
-#         # if event_handler:
-#         #     loop.run_until_complete(event_handler.async_unsubscribe_all())
-#         pass
+        # Indicate plugin is ready
+        stdout.write(jsonrpc_command(_SNAPCAST_STREAM_READY))
+
+        while True:
+            line = await stdin.readline()
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as e:
+                _LOGGER.error(
+                    "Failed to decode input '%s' as JSON. Error: %s", line, e)
+                continue
+
+            _LOGGER.debug("Got request '%s'.", request)
+
+            interface, command = request["method"].rsplit(".", 1)
+            if interface != _SNAPCAST_PLAYER_INTERFACE:
+                _LOGGER.warning(
+                    "Ignoring request for unknown interface '%s'.", interface)
+                continue
+
+            if not command in _SNAPCAST_SUPPORTED_COMMANDS:
+                _LOGGER.warning(
+                    "Ignoring request for unsupported command '%s'.", command)
+                continue
+
+            if command == SnapcastCommand.GET_PROPERTIES:
+                resp = jsonrpc_response(get_properties(device))
+                stdout.write(resp)
+
+    except KeyboardInterrupt:
+        _LOGGER.debug("Unsubscribing from services")
+        await device.async_unsubscribe_services()
+        exit(0)
 
 
 def main():
     # Basic log config
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
     # Argument parsing
     parser = argparse.ArgumentParser(
         description="Snapcast stream plugin for UPnP sources."
     )
-    parser.add_argument("--verbose", help="Enable debug messages.", action="store_true")
+    parser.add_argument(
+        "--verbose", help="Enable debug messages.", action="store_true")
     parser.add_argument("device", help="URL to device description XML")
-    args = parser.parse_args()
+    args, _unknown = parser.parse_known_args()
 
     if args.verbose:
         _LOGGER.setLevel(logging.DEBUG)
