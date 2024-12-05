@@ -5,6 +5,7 @@ Snapcast [stream plugin](https://github.com/badaix/snapcast/blob/develop/doc/jso
 1. Install stream plugin via pipx. 
     `pipx install .`
 2. Add control script options to UPnP source in `snapserver.conf`.
+
     e.g.
     ```
     controlscript=/usr/local/bin/snapcast-upnp&controlscriptparams=<RENDERER_DESCRIPTION_URL>
