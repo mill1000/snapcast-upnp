@@ -49,13 +49,12 @@ def get_properties(device) -> dict[str, Any]:
         # TODO is not evented, need to poll, does snapcast use this?
         "position": device.media_position,
 
-        # TODO disable controls for now
-        "canGoNext": False,
-        "canGoPrevious": False,
-        "canPlay": False,
-        "canPause": False,
-        "canSeek": False,
-        "canControl": False,
+        "canGoNext": device.can_next,
+        "canGoPrevious": device.can_previous,
+        "canPlay": device.can_play,
+        "canPause": device.can_pause,
+        "canSeek": device.can_seek_abs_time and device.can_seek_rel_time,
+        "canControl": device.can_stop or device.can_play,
     }
 
     if device.transport_state != TransportState.STOPPED:
@@ -77,9 +76,23 @@ def get_properties(device) -> dict[str, Any]:
     return props
 
 
-def jsonrpc_response(result) -> str:
+async def send_control(command, device):
+    control_methods = {
+        "stop": device.async_stop,
+        "play": device.async_play,
+        "pause": device.async_pause,
+        "playPause": (device.async_play if device.transport_state == TransportState.PAUSED_PLAYBACK else device.async_pause),
+        "previous": device.async_previous,
+        "next": device.async_next,
+    }
+
+    if method := control_methods.get(command):
+        await method()
+
+
+def jsonrpc_response(result, *, id=1) -> str:
     resp = {
-        "id": 1,  # TODO increment?
+        "id": id,
         "jsonrpc": "2.0",
         "result": result
     }
@@ -190,6 +203,11 @@ async def _run(args):
 
             if command == SnapcastCommand.GET_PROPERTIES:
                 resp = jsonrpc_response(get_properties(device))
+                stdout.write(resp)
+
+            if command == SnapcastCommand.CONTROL:
+                await send_control(request["params"]["command"], device)
+                resp = jsonrpc_response("ok", id=request["id"])
                 stdout.write(resp)
 
     except KeyboardInterrupt:
