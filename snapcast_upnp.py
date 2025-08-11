@@ -208,8 +208,8 @@ async def _run(args) -> NoReturn:
                 resp = jsonrpc_response("ok", id=request["id"])
                 stdout.write(resp)
 
-    except KeyboardInterrupt:
-        _LOGGER.debug("Unsubscribing from services")
+    except asyncio.CancelledError:
+        _LOGGER.debug("Unsubscribing from services.")
         await device.async_unsubscribe_services()
         exit(0)
 
