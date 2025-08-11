@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 from enum import StrEnum
-from typing import Any, Sequence
+from typing import Any, NoReturn, Sequence
 
 import aioconsole
 from async_upnp_client.aiohttp import AiohttpNotifyServer, AiohttpRequester
@@ -76,7 +76,7 @@ def get_properties(device) -> dict[str, Any]:
     return props
 
 
-async def send_control(command, device):
+async def send_control(command, device) -> None:
     control_methods = {
         "stop": device.async_stop,
         "play": device.async_play,
@@ -112,7 +112,7 @@ def jsonrpc_command(method, params=None) -> str:
 
 
 class DmrEventHandler:
-    def __init__(self, device: DmrDevice, stdout):
+    def __init__(self, device: DmrDevice, stdout) -> None:
         self._device = device
         self._stdout = stdout
         self._task = None
@@ -167,9 +167,7 @@ async def connect_device(description_url: str) -> DmrDevice:
     return dmr_device
 
 
-# TODO catch signals to unsubscribe
-
-async def _run(args):
+async def _run(args) -> NoReturn:
     device = await connect_device(args.device)
     await device.async_update()
 
@@ -216,7 +214,7 @@ async def _run(args):
         exit(0)
 
 
-def main():
+def main() -> None:
     # Basic log config
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
