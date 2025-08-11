@@ -46,7 +46,6 @@ def get_properties(device) -> dict[str, Any]:
         "volume": int(100 * (device.volume_level or 0.0)) if device.has_volume_level else 100,
         "mute": device.is_volume_muted if device.has_volume_mute else False,
         "rate": 1.0,  # TODO assume always normal speed
-        # TODO is not evented, need to poll, does snapcast use this?
         "position": device.media_position,
 
         "canGoNext": device.can_next,
@@ -171,6 +170,16 @@ async def _run(args) -> NoReturn:
     device = await connect_device(args.device)
     await device.async_update()
 
+    # Poll device in background to keep media position up to date
+    async def _poll(interval) -> NoReturn:
+        while True:
+            await device.async_update()
+            await asyncio.sleep(interval)
+
+    if args.poll > 0:
+        _LOGGER.debug("Enabling polling at %d second intervals.", args.poll)
+        asyncio.create_task(_poll(args.poll))
+
     try:
         stdin, stdout = await aioconsole.get_standard_streams()
 
@@ -225,6 +234,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--verbose", help="Enable debug messages.", action="store_true")
+    parser.add_argument(
+        "--poll", help="Enable polling for device updates. Default interval is 10 seconds.",
+        nargs='?',
+        const=10,
+        default=None,
+        type=int,
+        metavar="INTERVAL"
+    )
     parser.add_argument("device", help="URL to device description XML")
     args, _unknown = parser.parse_known_args()
 
