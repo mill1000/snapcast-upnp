@@ -176,7 +176,7 @@ async def _run(args) -> NoReturn:
             await device.async_update()
             await asyncio.sleep(interval)
 
-    if args.poll > 0:
+    if args.poll and args.poll > 0:
         _LOGGER.debug("Enabling polling at %d second intervals.", args.poll)
         asyncio.create_task(_poll(args.poll))
 
