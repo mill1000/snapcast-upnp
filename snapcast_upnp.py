@@ -52,7 +52,7 @@ def get_properties(device) -> dict[str, Any]:
         "canGoPrevious": device.can_previous,
         "canPlay": device.can_play,
         "canPause": device.can_pause,
-        "canSeek": device.can_seek_abs_time and device.can_seek_rel_time,
+        "canSeek": device.can_seek_abs_time or device.can_seek_rel_time,
         "canControl": device.can_stop or device.can_play,
     }
 
